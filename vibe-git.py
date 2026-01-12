@@ -278,7 +278,7 @@ GIT_FRAMES = [
     """,
 ]
 
-LOADING_FRAMES = ADVENTURER_FRAMES  # Change this to use different animation
+LOADING_FRAMES = GIT_FRAMES  # Change this to use different animation
 
 
 def colorize_sync(status: str) -> Text:

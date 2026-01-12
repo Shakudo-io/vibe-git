@@ -21,6 +21,75 @@ A powerful terminal UI (TUI) for managing multiple Git repositories and GitHub P
 </tr>
 </table>
 
+## Installation
+
+<details>
+<summary><strong>For Humans</strong> (step-by-step guide)</summary>
+
+### Prerequisites
+
+- **Python 3.11+**
+- **Git** installed and configured
+- **GitHub CLI (`gh`)** - required for PR features
+
+### Step 1: Install GitHub CLI (for PR features)
+
+```bash
+# macOS
+brew install gh
+
+# Ubuntu/Debian
+sudo apt install gh
+
+# Then authenticate
+gh auth login
+```
+
+### Step 2: Clone and Run
+
+```bash
+# Clone the repo
+git clone https://github.com/Shakudo-io/vibe-git.git
+cd vibe-git
+
+# Run with uv (recommended - auto-installs dependencies)
+./vibe-git.py ~/your-projects-folder
+
+# Or install dependencies manually and run
+pip install textual
+python vibe-git.py ~/your-projects-folder
+```
+
+### Step 3: Create an alias (optional)
+
+```bash
+# Add to your ~/.bashrc or ~/.zshrc
+alias vibe='python /path/to/vibe-git.py'
+
+# Then use anywhere
+vibe ~/projects
+```
+
+</details>
+
+<details open>
+<summary><strong>For AI Agents</strong> (copy-paste ready)</summary>
+
+```bash
+# One-liner: clone and run
+git clone https://github.com/Shakudo-io/vibe-git.git /tmp/vibe-git && uv run /tmp/vibe-git/vibe-git.py .
+
+# Or if already cloned, just run:
+uv run vibe-git.py /path/to/scan
+
+# Requires: git, gh (GitHub CLI authenticated), Python 3.11+
+# The script uses inline dependencies (PEP 723) - uv handles everything automatically
+```
+
+</details>
+
+---
+
 ## Why vibe-git?
 
 **Built for the age of AI-assisted development.**
@@ -108,53 +177,6 @@ View and manage all your open Pull Requests across all repositories:
 | `R` | Refresh data |
 | `?` | Show help |
 | `q` | Quit (double-tap to confirm) |
-
-## Requirements
-
-### System Requirements
-
-- **Python 3.11+**
-- **Git** installed and configured
-- **GitHub CLI (`gh`)** installed and authenticated (for PR features)
-
-### Python Dependencies
-
-```
-textual>=0.50.0
-```
-
-## Installation
-
-### Quick Start
-
-1. Clone or download `vibe-git.py`
-2. Install dependencies:
-   ```bash
-   pip install textual
-   ```
-3. Make executable (optional):
-   ```bash
-   chmod +x vibe-git.py
-   ```
-4. Run:
-   ```bash
-   python vibe-git.py [directory]
-   ```
-
-### GitHub CLI Setup (for PR features)
-
-The PR tab requires the GitHub CLI to be installed and authenticated:
-
-```bash
-# Install gh (macOS)
-brew install gh
-
-# Install gh (Ubuntu/Debian)
-sudo apt install gh
-
-# Authenticate
-gh auth login
-```
 
 ## Usage
 

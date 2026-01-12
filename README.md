@@ -6,6 +6,19 @@
 
 A powerful terminal UI (TUI) for managing multiple Git repositories and GitHub Pull Requests simultaneously.
 
+<table>
+<tr>
+<td width="50%" align="center">
+<strong>Repositories Tab</strong><br>
+<img src="demo-repos.gif" alt="Repositories tab demo" width="100%">
+</td>
+<td width="50%" align="center">
+<strong>Pull Requests Tab</strong><br>
+<img src="demo-prs.gif" alt="PRs tab demo" width="100%">
+</td>
+</tr>
+</table>
+
 ## Why vibe-git?
 
 **Built for the age of AI-assisted development.**

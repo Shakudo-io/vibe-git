@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="vibe-git logo" width="200">
+</p>
+
 # vibe-git
 
 A powerful terminal UI (TUI) for managing multiple Git repositories and GitHub Pull Requests simultaneously.
@@ -177,9 +181,17 @@ vibe-git creates worktrees with a flat naming convention for easy management:
 
 This keeps all your workstreams visible and accessible without nested folder structures.
 
-## Screenshots
+## Architecture
 
-*Coming soon*
+<p align="center">
+  <img src="architecture.png" alt="vibe-git architecture" width="700">
+</p>
+
+**vibe-git** is built with:
+- **[Textual](https://textual.textualize.io/)** - Modern Python TUI framework
+- **Git CLI** - For all repository operations (pull, push, rebase, stash, etc.)
+- **GitHub CLI (`gh`)** - For PR management and authentication
+- **File System Scanner** - Discovers `.git` folders recursively in your project directory
 
 ## Tips for AI-Assisted Development
 

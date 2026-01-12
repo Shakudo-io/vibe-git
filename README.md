@@ -4,6 +4,8 @@
 
 # vibe-git
 
+> *This TUI app was vibe coded on a [Shakudo](https://www.shakudo.io) development session using [OpenCode](https://github.com/opencode-ai/opencode) and [Oh-My-OpenCode](https://github.com/code-yeongyu/oh-my-opencode).*
+
 A powerful terminal UI (TUI) for managing multiple Git repositories and GitHub Pull Requests simultaneously.
 
 <table>

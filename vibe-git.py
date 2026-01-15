@@ -1807,8 +1807,9 @@ class GitStatusApp(App):
         self.action_switch_tab()
 
     def action_activate(self) -> None:
+        # Let Input widget handle Enter when filter is focused (triggers on_input_submitted)
         if self._filter_has_focus():
-            return
+            raise SkipAction()
         
         if self.active_tab == "config":
             select = self.query_one("#default-ai-cli-select", Select)

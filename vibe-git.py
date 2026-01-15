@@ -94,7 +94,12 @@ def get_ai_cli_command(cli_name: str) -> list[str]:
     return commands.get(cli_name, ["opencode"])
 
 
-def launch_ai_cli_zellij(cli_name: str, working_dir: Path, tab_name: str) -> tuple[bool, str]:
+def launch_ai_cli_zellij(
+    cli_name: str, 
+    working_dir: Path, 
+    tab_name: str,
+    initial_prompt: str | None = None,
+) -> tuple[bool, str]:
     cmd = get_ai_cli_command(cli_name)
     
     args_line = ""
@@ -112,12 +117,10 @@ def launch_ai_cli_zellij(cli_name: str, working_dir: Path, tab_name: str) -> tup
 '''
     
     try:
-        # Write temporary layout file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.kdl', delete=False) as f:
             f.write(layout_content)
             layout_path = f.name
         
-        # Create new tab with the layout
         result = subprocess.run(
             ["zellij", "action", "new-tab", "--layout", layout_path],
             capture_output=True,
@@ -125,17 +128,39 @@ def launch_ai_cli_zellij(cli_name: str, working_dir: Path, tab_name: str) -> tup
             timeout=10,
         )
         
-        # Clean up temp file
         os.unlink(layout_path)
         
-        if result.returncode == 0:
-            return True, f"Launched {cli_name} in new zellij tab"
-        else:
+        if result.returncode != 0:
             return False, result.stderr.strip() or "Failed to create zellij tab"
+        
+        if initial_prompt:
+            _send_prompt_to_zellij_tab_after_delay(tab_name, initial_prompt)
+        
+        return True, f"Launched {cli_name} in new zellij tab"
     except subprocess.TimeoutExpired:
         return False, "Zellij command timed out"
     except Exception as e:
         return False, str(e)
+
+
+def _send_prompt_to_zellij_tab_after_delay(tab_name: str, prompt: str, delay_seconds: float = 5.0) -> None:
+    import threading
+    
+    ENTER_KEY_ASCII = "13"
+    
+    def send_delayed():
+        import time
+        time.sleep(delay_seconds)
+        try:
+            subprocess.run(["zellij", "action", "go-to-tab-name", tab_name], capture_output=True, timeout=5)
+            time.sleep(0.5)
+            subprocess.run(["zellij", "action", "write-chars", prompt], capture_output=True, timeout=5)
+            time.sleep(0.2)
+            subprocess.run(["zellij", "action", "write", ENTER_KEY_ASCII], capture_output=True, timeout=5)
+        except Exception:
+            pass
+    
+    threading.Thread(target=send_delayed, daemon=True).start()
 
 
 def start_shared_opencode(scan_dir: Path) -> tuple[bool, str, subprocess.Popen | None]:
@@ -2444,7 +2469,15 @@ class GitStatusApp(App):
     def _execute_ai_launch(self, cli_id: str, working_dir: Path, repo_name: str) -> None:
         if is_inside_zellij():
             tab_name = f"{cli_id}: {repo_name}"
-            ok, msg = launch_ai_cli_zellij(cli_id, working_dir, tab_name)
+            initial_prompt = None
+            
+            if cli_id == "opencode-shared":
+                launch_dir = self.scan_dir
+                initial_prompt = f"I'm working on the code in {working_dir}. Please catch up on what's happening there and help me continue the work."
+            else:
+                launch_dir = working_dir
+            
+            ok, msg = launch_ai_cli_zellij(cli_id, launch_dir, tab_name, initial_prompt)
             if ok:
                 self.notify(msg, severity="information")
             else:

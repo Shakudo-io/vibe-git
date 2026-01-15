@@ -1793,7 +1793,9 @@ class GitStatusApp(App):
             switch_focused = switch.has_focus or switch.has_focus_within
             if switch_focused:
                 switch.toggle()
-            elif not select_focused:
+            elif select_focused:
+                raise SkipAction()
+            else:
                 select.focus()
         else:
             self.action_toggle_select()

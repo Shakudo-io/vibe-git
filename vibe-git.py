@@ -1437,6 +1437,10 @@ class HelpModal(ModalScreen):
 class AICliPickerModal(ModalScreen):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
+        Binding("up", "nav_up", "Up", show=False),
+        Binding("down", "nav_down", "Down", show=False),
+        Binding("k", "nav_up", "Up", show=False),
+        Binding("j", "nav_down", "Down", show=False),
     ]
 
     def __init__(self, current_default: str) -> None:
@@ -1449,7 +1453,11 @@ class AICliPickerModal(ModalScreen):
             for cli_id, cli_name in AI_CLI_OPTIONS:
                 marker = " [green](default)[/green]" if cli_id == self.current_default else ""
                 yield Button(f"{cli_name}{marker}", id=f"ai-btn-{cli_id}", classes="ai-picker-btn")
-            yield Static("\n[dim]Press Escape to cancel[/dim]", id="ai-picker-hint")
+            yield Static("\n[dim]↑/↓: navigate | Enter: select | Esc: cancel[/dim]", id="ai-picker-hint")
+
+    def on_mount(self) -> None:
+        default_btn = self.query_one(f"#ai-btn-{self.current_default}", Button)
+        default_btn.focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id and event.button.id.startswith("ai-btn-"):
@@ -1458,6 +1466,22 @@ class AICliPickerModal(ModalScreen):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_nav_up(self) -> None:
+        buttons = list(self.query(".ai-picker-btn"))
+        focused = self.focused
+        if focused in buttons:
+            idx = buttons.index(focused)
+            new_idx = (idx - 1) % len(buttons)
+            buttons[new_idx].focus()
+
+    def action_nav_down(self) -> None:
+        buttons = list(self.query(".ai-picker-btn"))
+        focused = self.focused
+        if focused in buttons:
+            idx = buttons.index(focused)
+            new_idx = (idx + 1) % len(buttons)
+            buttons[new_idx].focus()
 
 
 class GitStatusApp(App):
@@ -1668,7 +1692,7 @@ class GitStatusApp(App):
         Binding("o", "checkout_pr", "Checkout PR"),
         Binding("b", "open_pr_browser", "Open in Browser"),
         Binding("C", "close_pr", "Close PR"),
-        Binding("space", "toggle_select", "Select", show=False),
+        Binding("space", "toggle_select", "Select", show=False, priority=True),
         Binding("a", "select_all", "Select All"),
         Binding("escape", "clear_filter", "Clear", show=False),
         Binding("enter", "activate", "Select/Activate", show=False, priority=True),
@@ -2069,10 +2093,9 @@ class GitStatusApp(App):
         return [p for p in self.prs if p.number in self.selected_prs]
 
     def _filter_has_focus(self) -> bool:
-        """Check if filter input is currently focused."""
         try:
             filter_input = self.query_one("#filter-input", Input)
-            return filter_input.has_focus
+            return filter_input.has_focus and not filter_input.disabled
         except Exception:
             return False
 
@@ -2200,11 +2223,18 @@ class GitStatusApp(App):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "filter-input":
+            filter_input = self.query_one("#filter-input", Input)
+            filter_input.disabled = True
+            filter_input.blur()
             if self.active_tab == "repos":
                 table = self.query_one("#repo-table", DataTable)
-            else:
+            elif self.active_tab == "prs":
                 table = self.query_one("#pr-table", DataTable)
-            table.focus()
+            else:
+                filter_input.disabled = False
+                return
+            self.call_later(table.focus)
+            self.set_timer(0.1, lambda: setattr(filter_input, 'disabled', False))
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "default-ai-cli-select" and event.value:

@@ -3,20 +3,176 @@
 # requires-python = ">=3.10"
 # dependencies = ["textual>=0.50.0"]
 # ///
+import json
+import os
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.actions import SkipAction
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Header, Input, Label, Static, TabbedContent, TabPane
+from textual.widgets import (
+    DataTable, Footer, Header, Input, Label, Static, TabbedContent, TabPane,
+    Button, Select, Switch, Rule
+)
 from textual.coordinate import Coordinate
 from textual.worker import Worker, WorkerState
+
+
+# =============================================================================
+# Configuration System
+# =============================================================================
+
+AI_CLI_OPTIONS = [
+    ("opencode", "OpenCode"),
+    ("opencode-shared", "OpenCode (Shared Server)"),
+    ("claude", "Claude Code"),
+    ("gemini", "Gemini CLI"),
+    ("codex", "Codex CLI"),
+]
+
+CONFIG_DIR = Path.home() / ".config" / "vibe-git"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+
+@dataclass
+class AppConfig:
+    """Application configuration with persistence."""
+    default_ai_cli: str = "opencode"
+    shared_opencode_enabled: bool = False
+    
+    @classmethod
+    def load(cls) -> "AppConfig":
+        """Load config from disk or return defaults."""
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, "r") as f:
+                    data = json.load(f)
+                return cls(
+                    default_ai_cli=data.get("default_ai_cli", "opencode"),
+                    shared_opencode_enabled=data.get("shared_opencode_enabled", False),
+                )
+            except (json.JSONDecodeError, IOError):
+                pass
+        return cls()
+    
+    def save(self) -> None:
+        """Save config to disk."""
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_FILE, "w") as f:
+            json.dump({
+                "default_ai_cli": self.default_ai_cli,
+                "shared_opencode_enabled": self.shared_opencode_enabled,
+            }, f, indent=2)
+
+
+# =============================================================================
+# AI CLI Launcher Functions
+# =============================================================================
+
+def is_inside_zellij() -> bool:
+    """Check if running inside a zellij session."""
+    return "ZELLIJ" in os.environ
+
+
+def get_ai_cli_command(cli_name: str) -> list[str]:
+    """Get the command to run for a given AI CLI."""
+    commands = {
+        "opencode": ["opencode"],
+        "opencode-shared": ["opencode-shared"],
+        "claude": ["claude"],
+        "gemini": ["gemini"],
+        "codex": ["codex"],
+    }
+    return commands.get(cli_name, ["opencode"])
+
+
+def launch_ai_cli_zellij(cli_name: str, working_dir: Path, tab_name: str) -> tuple[bool, str]:
+    cmd = get_ai_cli_command(cli_name)
+    
+    args_line = ""
+    if len(cmd) > 1:
+        quoted_args = " ".join(f'"{a}"' for a in cmd[1:])
+        args_line = f"args {quoted_args}"
+    
+    layout_content = f'''layout {{
+    tab name="{tab_name}" {{
+        pane command="{cmd[0]}" cwd="{working_dir}" {{
+            {args_line}
+        }}
+    }}
+}}
+'''
+    
+    try:
+        # Write temporary layout file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.kdl', delete=False) as f:
+            f.write(layout_content)
+            layout_path = f.name
+        
+        # Create new tab with the layout
+        result = subprocess.run(
+            ["zellij", "action", "new-tab", "--layout", layout_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        
+        # Clean up temp file
+        os.unlink(layout_path)
+        
+        if result.returncode == 0:
+            return True, f"Launched {cli_name} in new zellij tab"
+        else:
+            return False, result.stderr.strip() or "Failed to create zellij tab"
+    except subprocess.TimeoutExpired:
+        return False, "Zellij command timed out"
+    except Exception as e:
+        return False, str(e)
+
+
+def start_shared_opencode(scan_dir: Path) -> tuple[bool, str, subprocess.Popen | None]:
+    """Start opencode-shared server in the scan directory."""
+    try:
+        # Check if opencode-shared is available
+        which_result = subprocess.run(["which", "opencode-shared"], capture_output=True)
+        if which_result.returncode != 0:
+            return False, "opencode-shared not found in PATH", None
+        
+        # Start the shared server in background
+        proc = subprocess.Popen(
+            ["opencode-shared"],
+            cwd=scan_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # Detach from parent process
+        )
+        return True, f"Started opencode-shared (PID: {proc.pid})", proc
+    except Exception as e:
+        return False, str(e), None
+
+
+def stop_shared_opencode(proc: subprocess.Popen | None) -> tuple[bool, str]:
+    """Stop the shared opencode server."""
+    if proc is None:
+        return False, "No shared opencode process to stop"
+    
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+        return True, "Stopped opencode-shared"
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return True, "Force killed opencode-shared"
+    except Exception as e:
+        return False, str(e)
 
 # Manga adventurer running animation frames
 ADVENTURER_FRAMES = [
@@ -1235,9 +1391,10 @@ class HelpModal(ModalScreen):
         help_text = """[bold cyan]═══ Git Status TUI Help ═══[/bold cyan]
 
 [bold]Navigation[/bold]
-  [yellow]Tab[/yellow]      Switch between Repos/PRs tabs
+  [yellow]Tab[/yellow]      Switch between Repos/PRs/Config tabs
   [yellow]↑/↓[/yellow]      Move cursor up/down
   [yellow]Space[/yellow]    Select item & move down
+  [yellow]Enter[/yellow]    Select item (or focus settings on Config)
   [yellow]a[/yellow]        Select/deselect all
   [yellow]Esc[/yellow]      Clear filter or selection
   [yellow]/[/yellow]        Filter by name
@@ -1252,10 +1409,16 @@ class HelpModal(ModalScreen):
   [yellow]d[/yellow]        Discard changes [red](dangerous)[/red]
   [yellow]D[/yellow]        Delete local (if synced) [red](dangerous)[/red]
   [yellow]X[/yellow]        Reset to remote [red](DESTRUCTIVE)[/red]
+  [yellow]A[/yellow]        [cyan]Launch AI CLI[/cyan] in selected repo
 
 [bold]PRs Tab Actions[/bold]
   [yellow]o[/yellow]        Checkout PR to worktree
   [yellow]b[/yellow]        Open PR in browser
+
+[bold]Config Tab[/bold]
+  [yellow]Enter[/yellow]    Focus settings
+  [yellow]↑/↓[/yellow]      Navigate between settings
+  Configure default AI CLI and shared OpenCode settings
 
 [bold]Other[/bold]
   [yellow]R[/yellow]        Refresh current tab
@@ -1269,6 +1432,32 @@ class HelpModal(ModalScreen):
 
     def action_dismiss(self) -> None:
         self.app.pop_screen()
+
+
+class AICliPickerModal(ModalScreen):
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, current_default: str) -> None:
+        super().__init__()
+        self.current_default = current_default
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ai-picker-modal"):
+            yield Static("[bold]Select AI CLI to launch[/bold]\n", id="ai-picker-title")
+            for cli_id, cli_name in AI_CLI_OPTIONS:
+                marker = " [green](default)[/green]" if cli_id == self.current_default else ""
+                yield Button(f"{cli_name}{marker}", id=f"ai-btn-{cli_id}", classes="ai-picker-btn")
+            yield Static("\n[dim]Press Escape to cancel[/dim]", id="ai-picker-hint")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id and event.button.id.startswith("ai-btn-"):
+            cli_id = event.button.id.replace("ai-btn-", "")
+            self.dismiss(cli_id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class GitStatusApp(App):
@@ -1409,6 +1598,56 @@ class GitStatusApp(App):
         width: 100%;
         height: auto;
     }
+    
+    #ai-picker-modal {
+        align: center middle;
+        width: 50;
+        height: auto;
+        max-height: 80%;
+        background: $surface;
+        border: tall $primary;
+        padding: 1 2;
+    }
+    
+    .ai-picker-btn {
+        width: 100%;
+        margin: 0 0 1 0;
+    }
+    
+    #config-container {
+        padding: 2 4;
+        height: 100%;
+    }
+    
+    .config-section {
+        margin: 0 0 2 0;
+        padding: 1 2;
+        border: round $primary;
+    }
+    
+    .config-section-title {
+        text-style: bold;
+        margin: 0 0 1 0;
+    }
+    
+    .config-row {
+        height: 3;
+        margin: 0 0 1 0;
+    }
+    
+    .config-label {
+        width: 30;
+        padding: 0 1;
+    }
+    
+    .config-value {
+        width: 1fr;
+    }
+    
+    #shared-opencode-status {
+        padding: 0 2;
+        color: $text-muted;
+    }
     """
 
     BINDINGS = [
@@ -1425,33 +1664,37 @@ class GitStatusApp(App):
         Binding("X", "reset_to_remote", "Reset to Remote"),
         Binding("D", "delete_local", "Delete Local"),
         Binding("w", "create_worktree", "New Worktree"),
+        Binding("A", "launch_ai_cli", "Launch AI CLI"),
         Binding("o", "checkout_pr", "Checkout PR"),
         Binding("b", "open_pr_browser", "Open in Browser"),
         Binding("C", "close_pr", "Close PR"),
         Binding("space", "toggle_select", "Select", show=False),
         Binding("a", "select_all", "Select All"),
         Binding("escape", "clear_filter", "Clear", show=False),
+        Binding("enter", "activate", "Select/Activate", show=False, priority=True),
+        Binding("down", "nav_down", show=False, priority=True),
+        Binding("up", "nav_up", show=False, priority=True),
         Binding("R", "refresh", "Refresh"),
     ]
 
     def __init__(self, scan_dir: Path) -> None:
         super().__init__()
         self.scan_dir = scan_dir
-        # Repos tab state
-        self.all_repos: list[RepoStatus] = []  # All repos (unfiltered)
-        self.repos: list[RepoStatus] = []  # Currently displayed (filtered)
-        self.selected: set[str] = set()  # Selected repo names
-        # PRs tab state
-        self.all_prs: list[PRStatus] = []  # All PRs (unfiltered)
-        self.prs: list[PRStatus] = []  # Currently displayed (filtered)
-        self.selected_prs: set[int] = set()  # Selected PR numbers
-        # Shared state
+        self.config = AppConfig.load()
+        self.all_repos: list[RepoStatus] = []
+        self.repos: list[RepoStatus] = []
+        self.selected: set[str] = set()
+        self.all_prs: list[PRStatus] = []
+        self.prs: list[PRStatus] = []
+        self.selected_prs: set[int] = set()
         self.filter_text: str = ""
         self.filter_visible: bool = False
         self.animation_frame = 0
         self.animation_timer = None
-        self.is_loading: bool = True  # Prevent premature table population
-        self.active_tab: str = "repos"  # "repos" or "prs"
+        self.is_loading: bool = True
+        self.active_tab: str = "repos"
+        self.shared_opencode_proc: subprocess.Popen | None = None
+        self.pending_ai_launch: tuple[str, Path] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1466,6 +1709,31 @@ class GitStatusApp(App):
                     yield DataTable(id="repo-table", cursor_type="row")
                 with TabPane("My Open PRs", id="prs"):
                     yield DataTable(id="pr-table", cursor_type="row")
+                with TabPane("Config", id="config"):
+                    with VerticalScroll(id="config-container"):
+                        yield Static("[bold cyan]AI CLI Settings[/bold cyan]", classes="config-section-title")
+                        with Horizontal(classes="config-row"):
+                            yield Static("Default AI CLI:", classes="config-label")
+                            yield Select(
+                                [(name, cli_id) for cli_id, name in AI_CLI_OPTIONS],
+                                value=self.config.default_ai_cli,
+                                id="default-ai-cli-select",
+                                classes="config-value"
+                            )
+                        yield Rule()
+                        yield Static("[bold cyan]Shared OpenCode Server[/bold cyan]", classes="config-section-title")
+                        with Horizontal(classes="config-row"):
+                            yield Static("Enable shared OpenCode:", classes="config-label")
+                            yield Switch(value=self.config.shared_opencode_enabled, id="shared-opencode-switch")
+                        yield Static(
+                            f"When enabled, starts opencode-shared server in: {self.scan_dir}",
+                            id="shared-opencode-status"
+                        )
+                        yield Rule()
+                        yield Static("[bold cyan]Environment[/bold cyan]", classes="config-section-title")
+                        zellij_status = "[green]Yes[/green]" if is_inside_zellij() else "[dim]No[/dim]"
+                        yield Static(f"Running inside Zellij: {zellij_status}", id="zellij-status")
+                        yield Static(f"Config file: {CONFIG_FILE}", id="config-file-path")
             with Horizontal(id="status-bar"):
                 yield Label("", id="status-label")
         yield Footer()
@@ -1503,32 +1771,91 @@ class GitStatusApp(App):
             pass  # Widget may not exist yet
 
     def action_switch_tab(self) -> None:
-        """Switch between repos and PRs tabs."""
         if self._filter_has_focus():
             return
         tabbed = self.query_one(TabbedContent)
-        if self.active_tab == "repos":
-            tabbed.active = "prs"
+        tab_order = ["repos", "prs", "config"]
+        current_idx = tab_order.index(self.active_tab) if self.active_tab in tab_order else 0
+        next_idx = (current_idx + 1) % len(tab_order)
+        tabbed.active = tab_order[next_idx]
+
+    def action_focus_next(self) -> None:
+        self.action_switch_tab()
+
+    def action_activate(self) -> None:
+        if self._filter_has_focus():
+            return
+        
+        if self.active_tab == "config":
+            select = self.query_one("#default-ai-cli-select", Select)
+            switch = self.query_one("#shared-opencode-switch", Switch)
+            select_focused = select.has_focus or select.has_focus_within
+            switch_focused = switch.has_focus or switch.has_focus_within
+            if switch_focused:
+                switch.toggle()
+            elif not select_focused:
+                select.focus()
         else:
-            tabbed.active = "repos"
+            self.action_toggle_select()
+
+    def action_nav_down(self) -> None:
+        if self.active_tab == "config":
+            select = self.query_one("#default-ai-cli-select", Select)
+            switch = self.query_one("#shared-opencode-switch", Switch)
+            select_focused = select.has_focus or select.has_focus_within
+            switch_focused = switch.has_focus or switch.has_focus_within
+            if select_focused:
+                if select.expanded:
+                    raise SkipAction()
+                switch.focus()
+                return
+            elif switch_focused:
+                return
+            select.focus()
+            return
+        if self.active_tab in ("repos", "prs"):
+            table_id = "#repo-table" if self.active_tab == "repos" else "#pr-table"
+            table = self.query_one(table_id, DataTable)
+            table.action_cursor_down()
+            return
+        raise SkipAction()
+
+    def action_nav_up(self) -> None:
+        if self.active_tab == "config":
+            select = self.query_one("#default-ai-cli-select", Select)
+            switch = self.query_one("#shared-opencode-switch", Switch)
+            select_focused = select.has_focus or select.has_focus_within
+            switch_focused = switch.has_focus or switch.has_focus_within
+            if switch_focused:
+                select.focus()
+                return
+            elif select_focused:
+                if select.expanded:
+                    raise SkipAction()
+                return
+            switch.focus()
+            return
+        if self.active_tab in ("repos", "prs"):
+            table_id = "#repo-table" if self.active_tab == "repos" else "#pr-table"
+            table = self.query_one(table_id, DataTable)
+            table.action_cursor_up()
+            return
+        raise SkipAction()
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
-        """Handle tab switch events."""
         self.active_tab = event.pane.id or "repos"
-        self.filter_text = ""  # Clear filter on tab switch
+        self.filter_text = ""
         if self.filter_visible:
             self.action_clear_filter()
         
-        # Focus the appropriate table
         if self.active_tab == "repos":
             table = self.query_one("#repo-table", DataTable)
             if not self.is_loading:
                 table.focus()
-        else:
+        elif self.active_tab == "prs":
             table = self.query_one("#pr-table", DataTable)
             if not self.is_loading:
                 table.focus()
-            # Load PRs if not yet loaded
             if not self.all_prs:
                 self.refresh_prs()
         
@@ -1721,15 +2048,17 @@ class GitStatusApp(App):
         if self.active_tab == "repos":
             count = len(self.selected)
             if count == 0:
-                label.update(f"{len(self.repos)} repos | Tab: PRs | Space: select | Actions: p/r/f/c | R: refresh")
+                label.update(f"{len(self.repos)} repos | Space: select | A: AI CLI | Tab: next | R: refresh")
             else:
-                label.update(f"{count} selected | Space: toggle | Esc: clear | Actions: p/r/f/c/s/d | R: refresh")
-        else:  # PRs tab
+                label.update(f"{count} selected | A: AI CLI | Actions: p/r/f/c/s/d | Esc: clear")
+        elif self.active_tab == "prs":
             count = len(self.selected_prs)
             if count == 0:
-                label.update(f"{len(self.prs)} PRs | Tab: Repos | Space: select | o: checkout | b: browser | C: close | R: refresh")
+                label.update(f"{len(self.prs)} PRs | Space: select | o: checkout | b: browser | Tab: next")
             else:
-                label.update(f"{count} selected | Space: toggle | Esc: clear | o: checkout | b: browser | C: close")
+                label.update(f"{count} selected | o: checkout | b: browser | C: close | Esc: clear")
+        else:
+            label.update("Config | Tab: next | ?: help")
 
     def get_selected_repos(self) -> list[RepoStatus]:
         return [r for r in self.repos if r.name in self.selected]
@@ -1868,7 +2197,6 @@ class GitStatusApp(App):
                 self._populate_pr_table()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle Enter in filter input - focus table."""
         if event.input.id == "filter-input":
             if self.active_tab == "repos":
                 table = self.query_one("#repo-table", DataTable)
@@ -1876,17 +2204,34 @@ class GitStatusApp(App):
                 table = self.query_one("#pr-table", DataTable)
             table.focus()
 
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "default-ai-cli-select" and event.value:
+            self.config.default_ai_cli = str(event.value)
+            self.config.save()
+            self.notify(f"Default AI CLI set to: {event.value}", severity="information")
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        if event.switch.id == "shared-opencode-switch":
+            self.config.shared_opencode_enabled = event.value
+            self.config.save()
+            if event.value:
+                ok, msg, proc = start_shared_opencode(self.scan_dir)
+                self.shared_opencode_proc = proc
+                if ok:
+                    self.notify(msg, severity="information")
+                else:
+                    self.notify(f"Failed: {msg}", severity="error")
+            else:
+                ok, msg = stop_shared_opencode(self.shared_opencode_proc)
+                self.shared_opencode_proc = None
+                self.notify(msg, severity="information")
+
     def on_key(self, event) -> None:
-        """Handle key events."""
-        # Route printable keys to filter input when filter is visible
         if self.filter_visible and not self._filter_has_focus():
-            # If filter is visible but doesn't have focus, and it's a printable key,
-            # focus the filter and let the key through
             key = event.key
             if len(key) == 1 and key.isprintable():
                 filter_input = self.query_one("#filter-input", Input)
                 filter_input.focus()
-                # Don't prevent - let the key go to the now-focused input
 
     def action_request_quit(self) -> None:
         """Handle quit request - require double press to quit."""
@@ -2039,8 +2384,43 @@ class GitStatusApp(App):
             handle_description
         )
 
+    def action_launch_ai_cli(self) -> None:
+        if self._filter_has_focus():
+            return
+        if self.active_tab != "repos":
+            return
+        
+        selected = self.get_selected_repos()
+        if not selected:
+            self.notify("No repos selected", severity="warning")
+            return
+        
+        if len(selected) > 1:
+            self.notify("Select only one repo to launch AI CLI", severity="warning")
+            return
+        
+        repo = selected[0]
+        
+        def handle_cli_choice(cli_id: str | None) -> None:
+            if not cli_id:
+                return
+            self._execute_ai_launch(cli_id, repo.path, repo.name)
+        
+        self.push_screen(AICliPickerModal(self.config.default_ai_cli), handle_cli_choice)
+
+    def _execute_ai_launch(self, cli_id: str, working_dir: Path, repo_name: str) -> None:
+        if is_inside_zellij():
+            tab_name = f"{cli_id}: {repo_name}"
+            ok, msg = launch_ai_cli_zellij(cli_id, working_dir, tab_name)
+            if ok:
+                self.notify(msg, severity="information")
+            else:
+                self.notify(f"Failed: {msg}", severity="error")
+        else:
+            self.pending_ai_launch = (cli_id, working_dir)
+            self.exit()
+
     def action_checkout_pr(self) -> None:
-        """Checkout selected PRs to worktrees."""
         if self._filter_has_focus():
             return
         if self.active_tab != "prs":
@@ -2154,6 +2534,13 @@ def main():
     scan_dir = scan_dir.resolve()
     app = GitStatusApp(scan_dir)
     app.run()
+    
+    if app.pending_ai_launch:
+        cli_id, working_dir = app.pending_ai_launch
+        cmd = get_ai_cli_command(cli_id)
+        print(f"\n🚀 Launching {cli_id} in {working_dir}...\n")
+        os.chdir(working_dir)
+        os.execvp(cmd[0], cmd)
 
 
 if __name__ == "__main__":

@@ -138,7 +138,7 @@ View and manage all Git repositories in a directory:
 | `d` | Discard changes |
 | `X` | Reset to remote (hard reset) |
 | `D` | Delete local folder |
-| `w` | Create new worktree |
+| `w` | Create [Speckit](https://github.com/github/spec-kit) feature (auto-numbered) |
 
 ### GitHub PRs Tab
 
@@ -217,6 +217,49 @@ vibe-git creates worktrees with a flat naming convention for easy management:
 ```
 
 This keeps all your workstreams visible and accessible without nested folder structures.
+
+### Speckit Integration
+
+vibe-git integrates with [Speckit](https://github.com/github/spec-kit) (GitHub's Specification-Driven Development toolkit) to streamline AI-assisted feature development.
+
+**Why Speckit?** When working with AI coding agents, having a structured specification workflow ensures:
+- Consistent feature organization across parallel workstreams
+- Clear separation between spec → plan → tasks → implementation phases
+- Auto-numbered branches prevent naming conflicts
+
+**How it works:** Press `w` on any repo to create a Speckit-compliant feature:
+
+1. **Enter a feature description** (e.g., "User authentication with OAuth")
+2. **vibe-git automatically:**
+   - Detects the next available feature number (scans branches + specs)
+   - Generates a semantic branch name: `001-user-authentication-oauth`
+   - Creates a worktree: `myrepo-001-user-authentication-oauth/`
+   - Sets up the spec structure: `specs/001-user-authentication-oauth/spec.md`
+   - Copies `.specify/` templates if they exist
+
+**Result:**
+```
+myrepo-001-user-authentication-oauth/
+├── .specify/                           # Templates (if present in source)
+│   └── templates/
+└── specs/
+    └── 001-user-authentication-oauth/
+        └── spec.md                     # Ready for /speckit.specify
+```
+
+Then in your AI agent session:
+```bash
+cd myrepo-001-user-authentication-oauth
+/speckit.specify   # Refine the spec
+/speckit.plan      # Generate implementation plan
+/speckit.tasks     # Break down into tasks
+/speckit.implement # Execute the plan
+```
+
+**Branch naming:** Feature descriptions are converted to branch names by:
+- Extracting meaningful words (filtering stop words like "the", "a", "with")
+- Keeping 2-4 significant words
+- Joining with dashes: `"Build dashboard for analytics"` → `002-dashboard-analytics`
 
 ## Architecture
 

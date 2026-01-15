@@ -322,19 +322,6 @@ class RepoStatus:
     main_branch: str
     has_changes: bool
 
-
-@dataclass
-class PRStatus:
-    """Represents an open PR from GitHub."""
-    number: int
-    title: str
-    branch: str
-    repo_name: str  # e.g., "monorepo"
-    repo_full_name: str  # e.g., "devsentient/monorepo"
-    url: str
-    local_status: str  # "Not cloned", "Available", "Checked out"
-    local_path: Path | None  # Path if checked out locally
-
     def can_pull(self) -> bool:
         return self.why_not_pull() is None
 
@@ -432,6 +419,19 @@ class PRStatus:
         if self.branch in ("HEAD", "DETACHED"):
             return "detached HEAD"
         return None
+
+
+@dataclass
+class PRStatus:
+    """Represents an open PR from GitHub."""
+    number: int
+    title: str
+    branch: str
+    repo_name: str  # e.g., "monorepo"
+    repo_full_name: str  # e.g., "devsentient/monorepo"
+    url: str
+    local_status: str  # "Not cloned", "Available", "Checked out"
+    local_path: Path | None  # Path if checked out locally
 
 
 def run_git(args: list[str], cwd: Path) -> tuple[bool, str]:
@@ -567,6 +567,145 @@ def get_pr_branch(repo_full_name: str, pr_number: int) -> str | None:
 def sanitize_branch_for_path(branch: str) -> str:
     """Convert branch name to safe folder name (replace / with -)."""
     return branch.replace("/", "-")
+
+
+def get_next_feature_number(repo_path: Path, scan_dir: Path) -> int:
+    """Get next available speckit feature number by scanning branches and specs."""
+    highest = 0
+    
+    # Check git branches
+    ok, branches = run_git(["branch", "-a"], repo_path)
+    if ok:
+        for line in branches.splitlines():
+            clean = line.strip().lstrip("* ").replace("remotes/origin/", "")
+            import re
+            match = re.match(r"^(\d{3})-", clean)
+            if match:
+                num = int(match.group(1))
+                highest = max(highest, num)
+    
+    # Check specs directories in scan_dir
+    for item in scan_dir.iterdir():
+        if not item.is_dir():
+            continue
+        specs_dir = item / "specs"
+        if specs_dir.exists():
+            for spec_item in specs_dir.iterdir():
+                if spec_item.is_dir():
+                    import re
+                    match = re.match(r"^(\d{3})-", spec_item.name)
+                    if match:
+                        num = int(match.group(1))
+                        highest = max(highest, num)
+    
+    return highest + 1
+
+
+def generate_speckit_branch_name(description: str) -> str:
+    """Generate semantic branch suffix from description (2-4 meaningful words)."""
+    stop_words = {
+        "i", "a", "an", "the", "to", "for", "of", "in", "on", "at", "by", "with",
+        "from", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+        "had", "do", "does", "did", "will", "would", "should", "could", "can",
+        "may", "might", "must", "shall", "this", "that", "these", "those", "my",
+        "your", "our", "their", "want", "need", "add", "get", "set", "build",
+        "create", "implement", "develop", "make", "new"
+    }
+    
+    import re
+    words = re.findall(r"[a-zA-Z]+", description.lower())
+    meaningful = [w for w in words if w not in stop_words and len(w) >= 3]
+    
+    if not meaningful:
+        meaningful = [w for w in words if len(w) >= 2][:3]
+    
+    result = "-".join(meaningful[:4]) if meaningful else "feature"
+    return result
+
+
+def create_speckit_worktree(repo: "RepoStatus", description: str, scan_dir: Path) -> tuple[bool, str]:
+    """Create a speckit-compliant worktree with spec structure."""
+    import shutil
+    
+    if not description or not description.strip():
+        return False, "Feature description cannot be empty"
+    
+    description = description.strip()
+    
+    # Get next feature number
+    feature_num = get_next_feature_number(repo.path, scan_dir)
+    feature_num_str = f"{feature_num:03d}"
+    
+    # Generate branch name
+    branch_suffix = generate_speckit_branch_name(description)
+    branch_name = f"{feature_num_str}-{branch_suffix}"
+    
+    # Check if branch already exists
+    ok, existing = run_git(["branch", "--list", branch_name], repo.path)
+    if ok and existing:
+        return False, f"Branch '{branch_name}' already exists"
+    
+    ok, remote_existing = run_git(["ls-remote", "--heads", "origin", branch_name], repo.path)
+    if ok and branch_name in remote_existing:
+        return False, f"Remote branch 'origin/{branch_name}' already exists"
+    
+    # Worktree path
+    worktree_folder = f"{repo.name}-{branch_name}"
+    worktree_path = scan_dir / worktree_folder
+    
+    if worktree_path.exists():
+        return False, f"Path already exists: {worktree_path}"
+    
+    # Create worktree with new branch
+    ok, output = run_git(["worktree", "add", "-b", branch_name, str(worktree_path)], repo.path)
+    if not ok:
+        return False, f"Worktree creation failed: {output}"
+    
+    # Create speckit structure
+    specs_dir = worktree_path / "specs" / branch_name
+    specs_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Copy spec template or create default
+    template_path = repo.path / ".specify" / "templates" / "spec-template.md"
+    spec_file = specs_dir / "spec.md"
+    
+    if template_path.exists():
+        shutil.copy(template_path, spec_file)
+    else:
+        spec_file.write_text(f"""# Feature: {description}
+
+## Overview
+
+[NEEDS CLARIFICATION: Detailed requirements]
+
+## User Stories
+
+### US1: [Primary User Story]
+
+**As a** [user type]
+**I want** [capability]
+**So that** [benefit]
+
+#### Acceptance Criteria
+- [ ] [Criterion 1]
+- [ ] [Criterion 2]
+
+## Success Criteria
+
+- **SC-001**: [Measurable metric]
+
+## Out of Scope
+
+- [Explicitly excluded items]
+""")
+    
+    # Copy .specify directory if it exists in source repo
+    source_specify = repo.path / ".specify"
+    target_specify = worktree_path / ".specify"
+    if source_specify.exists() and not target_specify.exists():
+        shutil.copytree(source_specify, target_specify)
+    
+    return True, f"Created speckit worktree:\n  Branch: {branch_name}\n  Path: {worktree_path}\n  Spec: {spec_file}"
 
 
 def detect_pr_local_status(pr_branch: str, repo_name: str, scan_dir: Path) -> tuple[str, Path | None]:
@@ -1108,7 +1247,7 @@ class HelpModal(ModalScreen):
   [yellow]r[/yellow]        Rebase/Sync on main
   [yellow]f[/yellow]        Force push [red](dangerous)[/red]
   [yellow]c[/yellow]        Create remote branch
-  [yellow]w[/yellow]        Create new branch + worktree
+  [yellow]w[/yellow]        [cyan]Speckit feature[/cyan] (###-branch + spec)
   [yellow]s[/yellow]        Stash changes
   [yellow]d[/yellow]        Discard changes [red](dangerous)[/red]
   [yellow]D[/yellow]        Delete local (if synced) [red](dangerous)[/red]
@@ -1857,7 +1996,7 @@ class GitStatusApp(App):
         )
 
     def action_create_worktree(self) -> None:
-        """Create a new branch and worktree from selected repo."""
+        """Create a speckit-compliant worktree with auto-numbered branch."""
         if self._filter_has_focus():
             return
         if self.active_tab != "repos":
@@ -1878,11 +2017,13 @@ class GitStatusApp(App):
             self.notify(f"Cannot create worktree: {reason}", severity="warning")
             return
         
-        def handle_branch_name(branch_name: str | None) -> None:
-            if not branch_name:
+        next_num = get_next_feature_number(repo.path, self.scan_dir)
+        
+        def handle_description(description: str | None) -> None:
+            if not description:
                 return
             
-            ok, message = create_branch_worktree(repo, branch_name)
+            ok, message = create_speckit_worktree(repo, description, self.scan_dir)
             if ok:
                 self.notify(message, severity="information")
             else:
@@ -1891,11 +2032,11 @@ class GitStatusApp(App):
         
         self.push_screen(
             InputModal(
-                "Create New Worktree",
-                f"Create new branch and worktree from [bold]{repo.name}[/bold] ({repo.branch})",
-                placeholder="Enter branch name..."
+                "Create Speckit Feature",
+                f"Create feature #{next_num:03d} from [bold]{repo.name}[/bold]\n\nDescribe the feature (will auto-generate branch name):",
+                placeholder="e.g., User authentication with OAuth..."
             ),
-            handle_branch_name
+            handle_description
         )
 
     def action_checkout_pr(self) -> None:

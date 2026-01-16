@@ -2040,11 +2040,10 @@ class GitStatusApp(App):
         self.repos = self._apply_filter()
 
         for repo in self.repos:
-            selected = "☑" if repo.name in self.selected else "☐"
             remote = Text("Yes", style="green") if repo.remote_exists else Text("No", style="dim")
             changes = Text("Yes", style="yellow") if repo.has_changes else Text("-", style="dim")
             table.add_row(
-                selected,
+                self._checkbox(repo.name in self.selected),
                 repo.type_label,
                 repo.name,
                 repo.branch[:30],
@@ -2076,10 +2075,9 @@ class GitStatusApp(App):
         self.prs = self._apply_pr_filter()
 
         for pr in self.prs:
-            selected = "☑" if pr.number in self.selected_prs else "☐"
             local_path_str = str(pr.local_path.name) if pr.local_path else "-"
             table.add_row(
-                selected,
+                self._checkbox(pr.number in self.selected_prs),
                 pr.repo_name,
                 f"#{pr.number}",
                 pr.title[:40] + ("..." if len(pr.title) > 40 else ""),
@@ -2118,6 +2116,52 @@ class GitStatusApp(App):
     def get_selected_prs(self) -> list[PRStatus]:
         return [p for p in self.prs if p.number in self.selected_prs]
 
+    def _get_target_repos(self, single_only: bool = False) -> list[RepoStatus]:
+        """Get repos to act on: selected repos, or cursor row if nothing selected."""
+        selected = self.get_selected_repos()
+        
+        # Fallback to cursor row when nothing explicitly selected
+        if not selected:
+            table = self.query_one("#repo-table", DataTable)
+            if table.cursor_row is not None and table.cursor_row < len(self.repos):
+                selected = [self.repos[table.cursor_row]]
+        
+        if not selected:
+            self.notify("No repos to act on", severity="warning")
+            return []
+        
+        if single_only and len(selected) > 1:
+            self.notify("Select only one repo for this action", severity="warning")
+            return []
+        
+        return selected
+
+    def _get_target_prs(self, single_only: bool = False) -> list[PRStatus]:
+        """Get PRs to act on: selected PRs, or cursor row if nothing selected."""
+        selected = self.get_selected_prs()
+        
+        # Fallback to cursor row when nothing explicitly selected
+        if not selected:
+            table = self.query_one("#pr-table", DataTable)
+            if table.cursor_row is not None and table.cursor_row < len(self.prs):
+                selected = [self.prs[table.cursor_row]]
+        
+        if not selected:
+            self.notify("No PRs to act on", severity="warning")
+            return []
+        
+        if single_only and len(selected) > 1:
+            self.notify("Select only one PR for this action", severity="warning")
+            return []
+        
+        return selected
+
+    def _checkbox(self, is_selected: bool) -> Text:
+        """Return a styled checkbox indicator."""
+        if is_selected:
+            return Text(" ● ", style="bold green")
+        return Text(" ○ ", style="dim")
+
     def _filter_has_focus(self) -> bool:
         try:
             filter_input = self.query_one("#filter-input", Input)
@@ -2138,8 +2182,7 @@ class GitStatusApp(App):
                 else:
                     self.selected.add(repo.name)
                 
-                selected_char = "☑" if repo.name in self.selected else "☐"
-                table.update_cell_at(Coordinate(table.cursor_row, 0), selected_char)
+                table.update_cell_at(Coordinate(table.cursor_row, 0), self._checkbox(repo.name in self.selected))
                 self.update_status()
                 
                 # Auto-advance to next row
@@ -2154,8 +2197,7 @@ class GitStatusApp(App):
                 else:
                     self.selected_prs.add(pr.number)
                 
-                selected_char = "☑" if pr.number in self.selected_prs else "☐"
-                table.update_cell_at(Coordinate(table.cursor_row, 0), selected_char)
+                table.update_cell_at(Coordinate(table.cursor_row, 0), self._checkbox(pr.number in self.selected_prs))
                 self.update_status()
                 
                 # Auto-advance to next row
@@ -2174,8 +2216,7 @@ class GitStatusApp(App):
                 self.selected = {r.name for r in self.repos}
             
             for i, repo in enumerate(self.repos):
-                selected_char = "☑" if repo.name in self.selected else "☐"
-                table.update_cell_at(Coordinate(i, 0), selected_char)
+                table.update_cell_at(Coordinate(i, 0), self._checkbox(repo.name in self.selected))
         else:  # PRs tab
             table = self.query_one("#pr-table", DataTable)
             if len(self.selected_prs) == len(self.prs):
@@ -2184,8 +2225,7 @@ class GitStatusApp(App):
                 self.selected_prs = {p.number for p in self.prs}
             
             for i, pr in enumerate(self.prs):
-                selected_char = "☑" if pr.number in self.selected_prs else "☐"
-                table.update_cell_at(Coordinate(i, 0), selected_char)
+                table.update_cell_at(Coordinate(i, 0), self._checkbox(pr.number in self.selected_prs))
         
         self.update_status()
 
@@ -2194,12 +2234,12 @@ class GitStatusApp(App):
             table = self.query_one("#repo-table", DataTable)
             self.selected.clear()
             for i in range(len(self.repos)):
-                table.update_cell_at(Coordinate(i, 0), "☐")
+                table.update_cell_at(Coordinate(i, 0), self._checkbox(False))
         else:  # PRs tab
             table = self.query_one("#pr-table", DataTable)
             self.selected_prs.clear()
             for i in range(len(self.prs)):
-                table.update_cell_at(Coordinate(i, 0), "☐")
+                table.update_cell_at(Coordinate(i, 0), self._checkbox(False))
         self.update_status()
 
     def action_start_filter(self) -> None:
@@ -2326,9 +2366,8 @@ class GitStatusApp(App):
             return
         if self.active_tab != "repos":
             return
-        selected = self.get_selected_repos()
+        selected = self._get_target_repos()
         if not selected:
-            self.notify("No repos selected", severity="warning")
             return
 
         eligible = [r for r in selected if check_fn(r)]
@@ -2357,6 +2396,7 @@ class GitStatusApp(App):
             for repo in eligible:
                 ok, message = action_fn(repo)
                 results.append((repo.name, ok, message))
+                self.selected.discard(repo.name)
             self.push_screen(ResultsModal(f"{action_name} Results", results))
             self.refresh_repos()
 
@@ -2399,19 +2439,13 @@ class GitStatusApp(App):
         )
 
     def action_create_worktree(self) -> None:
-        """Create a speckit-compliant worktree with auto-numbered branch."""
         if self._filter_has_focus():
             return
         if self.active_tab != "repos":
             return
         
-        selected = self.get_selected_repos()
+        selected = self._get_target_repos(single_only=True)
         if not selected:
-            self.notify("No repos selected", severity="warning")
-            return
-        
-        if len(selected) > 1:
-            self.notify("Select only one repo for creating worktree", severity="warning")
             return
         
         repo = selected[0]
@@ -2448,13 +2482,8 @@ class GitStatusApp(App):
         if self.active_tab != "repos":
             return
         
-        selected = self.get_selected_repos()
+        selected = self._get_target_repos(single_only=True)
         if not selected:
-            self.notify("No repos selected", severity="warning")
-            return
-        
-        if len(selected) > 1:
-            self.notify("Select only one repo to launch AI CLI", severity="warning")
             return
         
         repo = selected[0]
@@ -2492,9 +2521,8 @@ class GitStatusApp(App):
         if self.active_tab != "prs":
             return
         
-        selected = self.get_selected_prs()
+        selected = self._get_target_prs()
         if not selected:
-            self.notify("No PRs selected", severity="warning")
             return
         
         # Filter to PRs that can be checked out
@@ -2530,15 +2558,13 @@ class GitStatusApp(App):
         self.push_screen(ConfirmModal("Checkout PRs", msg), do_checkout)
 
     def action_open_pr_browser(self) -> None:
-        """Open selected PRs in browser."""
         if self._filter_has_focus():
             return
         if self.active_tab != "prs":
             return
         
-        selected = self.get_selected_prs()
+        selected = self._get_target_prs()
         if not selected:
-            self.notify("No PRs selected", severity="warning")
             return
         
         results = []
@@ -2555,15 +2581,13 @@ class GitStatusApp(App):
             self.push_screen(ResultsModal("Open in Browser Results", results))
 
     def action_close_pr(self) -> None:
-        """Close selected PRs."""
         if self._filter_has_focus():
             return
         if self.active_tab != "prs":
             return
         
-        selected = self.get_selected_prs()
+        selected = self._get_target_prs()
         if not selected:
-            self.notify("No PRs selected", severity="warning")
             return
         
         # Build confirmation message

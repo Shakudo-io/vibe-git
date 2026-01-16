@@ -1462,6 +1462,7 @@ class HelpModal(ModalScreen):
 class AICliPickerModal(ModalScreen):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "select", "Select", show=False),
         Binding("up", "nav_up", "Up", show=False),
         Binding("down", "nav_down", "Down", show=False),
         Binding("k", "nav_up", "Up", show=False),
@@ -1491,6 +1492,12 @@ class AICliPickerModal(ModalScreen):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_select(self) -> None:
+        focused = self.focused
+        if isinstance(focused, Button) and focused.id and focused.id.startswith("ai-btn-"):
+            cli_id = focused.id.replace("ai-btn-", "")
+            self.dismiss(cli_id)
 
     def action_nav_up(self) -> None:
         buttons = list(self.query(".ai-picker-btn"))
@@ -1832,7 +1839,8 @@ class GitStatusApp(App):
         self.action_switch_tab()
 
     def action_activate(self) -> None:
-        # Let Input widget handle Enter when filter is focused (triggers on_input_submitted)
+        if isinstance(self.screen, ModalScreen):
+            raise SkipAction()
         if self._filter_has_focus():
             raise SkipAction()
         
